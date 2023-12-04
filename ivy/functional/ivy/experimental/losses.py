@@ -11,7 +11,125 @@ from ivy.func_wrapper import (
     to_native_arrays_and_back,
 )
 from ivy.utils.exceptions import handle_exceptions
+import ivy.functional.frontends.torch as torch_frontend
 
+# cosine_embedding_loss
+@handle_exceptions
+@handle_nestable
+@handle_array_like_without_promotion
+@inputs_to_ivy_arrays
+def cosine_embedding_loss(
+    input1: Union[ivy.Array, ivy.NativeArray],
+    input2: Union[ivy.Array, ivy.NativeArray],
+    target: Union[ivy.Array, ivy.NativeArray],
+    /,
+    *,
+    margin: Optional[float] = 0.0,
+    reduction: Optional[str] = "mean", 
+    out: Optional[ivy.Array] = None,
+) -> ivy.Array:
+    """
+    Compute cosine embedding loss between inputs and the target.
+
+    Parameters
+    ----------
+    input1 : Union[ivy.Array, ivy.NativeArray]
+        Input array containing input1 values.
+    input2 : Union[ivy.Array, ivy.NativeArray]
+        Input array containing input2 values.
+    target : Union[ivy.Array, ivy.NativeArray]
+        Input array containing targeted values.
+    margin : float, optional
+        Margin method used while the calculation of loss. Options:
+        <Any float number>. Default: "0.0".
+    reduction : str, optional
+        Reduction method for the output loss. Options:
+        "none" (no reduction), "mean" (mean of losses),
+        "sum" (sum of losses). Default: "mean".
+    out : Optional[ivy.Array], optional
+        Optional output array for writing the result to.
+        It must have a shape that the inputs broadcast to.
+
+
+    Returns
+    -------
+    ivy.Array
+        The cosine embedding loss between the given inputs and targeted values.
+
+
+    Examples
+    --------
+    >>> x1 = ivy.array([[0.946, 0.535],[0.146, 0.418],[0.911, 0.862]])
+    >>> x2 = ivy.array([[0.812, 0.935],[0.766, 0.904],[0.915, 0.338]])
+    >>> y = ivy.array([1.0, 2.0, 3.0])
+    >>> print(ivy.cosine_embedding_loss(x1, x2, y))
+    ivy.array(0.01919236)
+    >>> a1 = ivy.array([[0.89 , 0.067],[0.025 , 0.93]])
+    >>> a2 = ivy.array([[0.29, 0.33], [0.36 , 0.56]])
+    >>> b = ivy.array([1, 2])
+    >>> print(ivy.cosine_embedding_loss(a1, a2, b))
+    ivy.array(0.14267954)
+    """
+    def norm(input, axis):
+        return ivy.sqrt(ivy.sum(ivy.square(input), axis=axis))
+
+    def cosine_similarity(x1, x2):
+        axis = None
+        if len(x1.shape) == len(x2.shape) and len(x2.shape) == 2:
+            axis = 1
+        input1_norm = norm(x1, axis=axis)
+        input2_norm = norm(x2, axis=axis)
+        norm_mm = input1_norm * input2_norm
+        norm_mm, eps = torch_frontend.promote_types_of_torch_inputs(norm_mm, 1e-08)
+        return ivy.sum(x1 * x2, axis=axis) / ivy.maximum(norm_mm, eps)
+
+    def calculate_loss(x1, x2, target):
+        cos = cosine_similarity(x1, x2)
+        if target == ivy.array(1.0):
+            loss = 1.0 - cos
+        elif target == ivy.array(-1.0):
+            loss = ivy.maximum(ivy.array(0.0), cos - ivy.array(margin))
+        else:
+            _, zero = torch_frontend.promote_types_of_torch_inputs(
+                input1, ivy.array(0.0)
+            )
+            return zero
+
+        return loss
+
+    ivy.utils.assertions.check_true(
+        target.ndim + 1 == input1.ndim and target.ndim + 1 == input2.ndim,
+        f"{target.ndim}D target tensor expects {target.ndim + 1}D input tensors, but "
+        f"found inputs with sizes {list(input1.shape)} and {list(input2.shape)}.",
+    )
+
+    ivy.utils.assertions.check_true(
+        target.ndim < 2, "0D or 1D target tensor expected, multi-target not supported"
+    )
+
+    ivy.utils.assertions.check_shape(input1, input2)
+
+    if target.ndim == 1:
+        ivy.utils.assertions.check_true(
+            target.shape[0] == input1.shape[0],
+            f"The size of target tensor ({target.shape[0]}) must match the size of"
+            f" input tensor ({input1.shape[0]}) at non-singleton dimension 0 ",
+        )
+
+    if target.ndim == 0:
+        loss = calculate_loss(input1, input2, target)
+    else:
+        loss = ivy.array([
+            calculate_loss(input1[i], input2[i], target[i])
+            for i in range(input1.shape[0])
+        ])
+
+    if reduction == "sum":
+        return ivy.sum(loss, out=out)
+    elif reduction == "mean":
+        return ivy.mean(loss, out=out)
+    else:
+        return ivy.inplace_update(out, loss) if out is not None else loss
 
 # log_poisson_loss
 @handle_exceptions
